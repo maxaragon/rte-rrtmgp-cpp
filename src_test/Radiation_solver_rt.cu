@@ -743,6 +743,31 @@ void Radiation_solver_shortwave::solve_gpu(
 
         toa_src.fill(toa_src_temp({1}) * tsi_scaling({1}));
 
+        if (switch_aerosol_optics)
+        {
+            if (band > previous_band)
+            {
+                Aerosol_concs_gpu aerosol_concs_subset(aerosol_concs, 1, n_col);
+                aerosol_optics_gpu->aerosol_optics(
+                        band-1,
+                        aerosol_concs_subset,
+                        rh, p_lev,
+                        *aerosol_optical_props);
+                if (switch_delta_aerosol)
+                    aerosol_optical_props->delta_scale();
+            }
+
+            // Add the cloud optical props to the gas optical properties.
+            add_to(
+                    dynamic_cast<Optical_props_2str_rt&>(*optical_props),
+                    dynamic_cast<Optical_props_2str_rt&>(*aerosol_optical_props));
+        }
+        else
+        {
+            Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, aerosol_optical_props->get_tau().ptr());
+            Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, aerosol_optical_props->get_ssa().ptr());
+            Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, aerosol_optical_props->get_g().ptr());
+        }
                 
         Array<Float,1> tod_dir_diff({2});
         
@@ -791,32 +816,6 @@ void Radiation_solver_shortwave::solve_gpu(
             Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, cloud_optical_props->get_tau().ptr());
             Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, cloud_optical_props->get_ssa().ptr());
             Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, cloud_optical_props->get_g().ptr());
-        }
-
-        if (switch_aerosol_optics)
-        {
-            if (band > previous_band)
-            {
-                Aerosol_concs_gpu aerosol_concs_subset(aerosol_concs, 1, n_col);
-                aerosol_optics_gpu->aerosol_optics(
-                        band-1,
-                        aerosol_concs_subset,
-                        rh, p_lev,
-                        *aerosol_optical_props);
-                if (switch_delta_aerosol)
-                    aerosol_optical_props->delta_scale();
-            }
-
-            // Add the cloud optical props to the gas optical properties.
-            add_to(
-                    dynamic_cast<Optical_props_2str_rt&>(*optical_props),
-                    dynamic_cast<Optical_props_2str_rt&>(*aerosol_optical_props));
-        }
-        else
-        {
-            Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, aerosol_optical_props->get_tau().ptr());
-            Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, aerosol_optical_props->get_ssa().ptr());
-            Gas_optics_rrtmgp_kernels_cuda_rt::zero_array(n_col, n_lay, aerosol_optical_props->get_g().ptr());
         }
 
         // Store the optical properties, if desired
