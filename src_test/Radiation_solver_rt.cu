@@ -743,6 +743,29 @@ void Radiation_solver_shortwave::solve_gpu(
 
         toa_src.fill(toa_src_temp({1}) * tsi_scaling({1}));
 
+                
+        Array<Float,1> tod_dir_diff({2});
+        
+        if (switch_fluxes && switch_raytracing)
+        {
+            std::unique_ptr<Fluxes_broadband_rt> fluxes =
+                    std::make_unique<Fluxes_broadband_rt>(grid_cells.x, grid_cells.y, n_lev);
+
+            rte_sw.rte_sw(
+                    optical_props,
+                    top_at_1,
+                    mu0,
+                    toa_src,
+                    sfc_alb_dir.subset({{ {band, band}, {1, n_col}}}),
+                    sfc_alb_dif.subset({{ {band, band}, {1, n_col}}}),
+                    Array_gpu<Float,1>(), // Add an empty array, no inc_flux.
+                    (*fluxes).get_flux_up(),
+                    (*fluxes).get_flux_dn(),
+                    (*fluxes).get_flux_dn_dir());
+
+            compute_tod_flux(n_col, grid_cells.z, (*fluxes).get_flux_dn(), (*fluxes).get_flux_dn_dir(), tod_dir_diff);
+        }
+        
         if (switch_cloud_optics)
         {
             if (band > previous_band)
@@ -830,8 +853,8 @@ void Radiation_solver_shortwave::solve_gpu(
                 Float zenith_angle = std::acos(mu0({1}));
                 Float azimuth_angle = azi({1}); // sun approximately from south
 
-                Array<Float,1> tod_dir_diff({2});
-                compute_tod_flux(n_col, grid_cells.z, (*fluxes).get_flux_dn(), (*fluxes).get_flux_dn_dir(), tod_dir_diff);
+                // Array<Float,1> tod_dir_diff({2});
+                // compute_tod_flux(n_col, grid_cells.z, (*fluxes).get_flux_dn(), (*fluxes).get_flux_dn_dir(), tod_dir_diff);
 
                 if (switch_cloud_mie)
                 {
