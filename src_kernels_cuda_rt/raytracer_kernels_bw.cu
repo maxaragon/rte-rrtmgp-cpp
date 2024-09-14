@@ -16,7 +16,9 @@ namespace
     constexpr Float cos_half_angle = Float(0.9999891776066407); // cos(half_angle);
     constexpr Float solid_angle = Float(6.799910294339209e-05); // 2.*M_PI*(1-cos_half_angle);
 
-    enum class Phase_kind {Lambertian, Specular, Rayleigh, HG, Mie};
+    //enum class Phase_kind {Lambertian, Specular, Rayleigh, HG, Mie};
+    enum class Phase_kind {Lambertian, Specular, Rayleigh, HG, Mie, DHG};
+
 
     template<typename T> __device__
     Vector<T> specular(const Vector<T> dir_in,const Vector<T> dir_n)
@@ -41,6 +43,38 @@ namespace
     {
         const Float denom = max(Float_epsilon, 1 + g*g - 2*g*cos_angle);
         return Float(1.)/(Float(4.)*M_PI) * (1-g*g) / (denom*sqrt(denom));
+    }
+
+    __device__
+    Float double_henyey_phase(const Float g1, const Float g2, const Float f, const Float cos_angle)
+    {
+        // Henyey-Greenstein phase function for g1
+        const Float denom1 = max(Float_epsilon, 1 + g1*g1 - 2*g1*cos_angle);
+        const Float phase1 = (1 - g1*g1) / (denom1 * sqrt(denom1));
+
+        // Henyey-Greenstein phase function for g2
+        const Float denom2 = max(Float_epsilon, 1 + g2*g2 - 2*g2*cos_angle);
+        const Float phase2 = (1 - g2*g2) / (denom2 * sqrt(denom2));
+
+        // Combine the two HG functions
+        return Float(1.) / (Float(4.) * M_PI) * (f * phase1 + (1 - f) * phase2);
+    }
+
+    __device__
+    Float sample_double_henyey(const Float g1, const Float g2, const Float f, Random_number_generator<Float>& rng)
+    {
+        Float xi = rng();
+        Float cos_theta;
+
+        if (xi < f)
+        {
+            cos_theta = henyey(g1, rng());
+        }
+        else
+        {
+            cos_theta = henyey(g2, rng());
+        }
+        return cos_theta;
     }
 
     __device__
@@ -242,26 +276,32 @@ namespace
         
     }
 
+
     __device__
     inline Float probability_from_sun(
             Photon photon,
             const Vector<Float>& sun_direction,
-            const Float solid_angle, const Float g,
+            const Float solid_angle, 
+            const Float g, 
+            const Float g1, const Float g2, const Float f,  // Add g1, g2, and f here
             const Float* __restrict__ mie_phase_ang,
             const Float* __restrict__ mie_phase,
             const Float r_eff,
             const int mie_table_size,
             const Vector<Float>& normal,
             const Phase_kind kind)
-    {
+    {  
         const Float cos_angle = dot(photon.direction, sun_direction);
-        if (kind == Phase_kind::HG)
+        if (kind == Phase_kind::DHG)
+        {
+            return double_henyey_phase(g1, g2, f, cos_angle) * solid_angle;
+        }
+        else if (kind == Phase_kind::HG)
         {
             return henyey_phase(g, cos_angle) * solid_angle;
         }
         else if (kind == Phase_kind::Mie)
         {
-            // return interpolate_mie_phase_table(mie_phase_ang, mie_phase, max(0.05, acos(cos_angle)), r_eff, mie_table_size) * solid_angle;
             return mie_interpolate_phase_table(mie_phase_ang, mie_phase, acos(cos_angle), r_eff, mie_table_size) * solid_angle;
         }
         else if (kind == Phase_kind::Rayleigh)
@@ -274,7 +314,7 @@ namespace
         }
         else if (kind == Phase_kind::Specular)
         {
-            return (dot( specular(photon.direction, normal) , sun_direction) > cos_half_angle) ? Float(1.) : Float(0.);
+            return (dot(specular(photon.direction, normal), sun_direction) > cos_half_angle) ? Float(1.) : Float(0.);
         }
     }
 }
@@ -432,6 +472,15 @@ void ray_tracer_kernel_bw(
                     photon.position.y += photon.direction.y * dn;
                     photon.position.x += photon.direction.x * dn;
 
+                    // Assign DHG parameters for aerosols in the background grid
+                    // Values from (Albers 2020: https://amt.copernicus.org/articles/13/3235/2020/amt-13-3235-2020.pdf)
+
+                    const Float asy_aer_g1_bg = 0.962; // g1 for aerosols 
+                    const Float asy_aer_g2_bg = 0.50;  // g2 for aerosols
+                    const Float asy_aer_f_bg  = 0.06;  // fraction for g1
+                    const Float asy_aer_fb_bg = 0.55;  // backscatter peak for aerosols (if used)
+
+
                     // Compute probability not being absorbed and store weighted absorption probability
                     const Float k_sca_bg_tot = scat_asy_bg[bg_idx].k_sca_gas + scat_asy_bg[bg_idx].k_sca_cld + scat_asy_bg[bg_idx].k_sca_aer;
                     const Float ssa_bg_tot = k_sca_bg_tot / k_ext_bg[bg_idx];
@@ -448,7 +497,12 @@ void ray_tracer_kernel_bw(
                         const Float scatter_rng = rng();
                         const int scatter_type = scatter_rng < (scat_asy_bg[bg_idx].k_sca_aer/k_sca_bg_tot) ? 2 :
                                                  scatter_rng < ((scat_asy_bg[bg_idx].k_sca_aer+scat_asy_bg[bg_idx].k_sca_cld)/k_sca_bg_tot) ? 1 : 0;
-                        Float g;
+                        
+                        Float g = Float(0.); // For HG and Rayleigh
+                        Float g1 = Float(0.); // For DHG
+                        Float g2 = Float(0.);
+                        Float f  = Float(0.);
+
                         switch (scatter_type)
                         {
                             case 0:
@@ -458,15 +512,50 @@ void ray_tracer_kernel_bw(
                                 g = min(Float(1.) - Float_epsilon, scat_asy_bg[bg_idx].asy_cld);
                                 break;
                             case 2:
-                                g = min(Float(1.) - Float_epsilon, scat_asy_bg[bg_idx].asy_aer);
+                                // Use DHG parameters for aerosols
+                                g1 = asy_aer_g1_bg;
+                                g2 = asy_aer_g2_bg;
+                                f  = asy_aer_f_bg;
                                 break;
                         }
-                        const Float cos_scat = (scatter_type == 0) ? rayleigh(rng()) : henyey(g, rng());
+
+
+                        //const Float cos_scat = (scatter_type == 0) ? rayleigh(rng()) : henyey(g, rng());
+                        //const Float cos_scat = sample_double_henyey(g1, g2, f, rng);
+                        Float cos_scat;
+                        if (scatter_type == 0) // Rayleigh scattering
+                        {
+                            cos_scat = rayleigh(rng());
+                        }
+                        else if (scatter_type == 1) // HG scattering for clouds
+                        {
+                            cos_scat = henyey(g, rng());
+                        }
+                        else if (scatter_type == 2) // DHG scattering for aerosols
+                        {
+                            cos_scat = sample_double_henyey(g1, g2, f, rng);
+                        }
+
+                        
                         const Float sin_scat = max(Float(0.), sqrt(Float(1.) - cos_scat*cos_scat + Float_epsilon));
 
                         // direct contribution
-                        const Phase_kind kind = (scatter_type==0) ? Phase_kind::Rayleigh : Phase_kind::HG;
-                        const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, g, mie_phase_ang_shared, mie_phase, Float(0.), 0, surface_normal, kind);
+                        //const Phase_kind kind = (scatter_type==0) ? Phase_kind::Rayleigh : Phase_kind::HG;
+                        Phase_kind kind;
+                        if (scatter_type == 0)
+                        {
+                            kind = Phase_kind::Rayleigh;
+                        }
+                        else if (scatter_type == 1)
+                        {
+                            kind = (mie_table_size > 0) ? Phase_kind::Mie : Phase_kind::HG;
+                        }
+                        else if (scatter_type == 2)
+                        {
+                            kind = Phase_kind::DHG;
+                        }
+
+                        const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, g, g1, g2, f, mie_phase_ang_shared, mie_phase, Float(0.), 0, surface_normal, kind);
                         const Float trans_sun = transmission_direct_sun(photon,n,rng,sun_direction,
                                                     k_null_grid,k_ext,
                                                     bg_tau_cum, z_lev_bg, bg_idx,
@@ -554,7 +643,7 @@ void ray_tracer_kernel_bw(
                                                                                 : Phase_kind::Lambertian;
 
                         // SUN SCATTERING GOES HERE
-                        const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, Float(0.),  mie_phase_ang_shared, mie_phase, Float(0.), 0,
+                        const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, Float(0.),  Float(0.), Float(0.), Float(0.), mie_phase_ang_shared, mie_phase, Float(0.), 0,
                                                                  surface_normal, surface_kind);
                         const Float trans_sun = transmission_direct_sun(photon,n,rng,sun_direction,
                                                     k_null_grid,k_ext,
@@ -639,6 +728,12 @@ void ray_tracer_kernel_bw(
                     const int k = float_to_int(photon.position.z, grid_d.z, grid_cells.z);
                     const int ijk = i + j*grid_cells.x + k*grid_cells.x*grid_cells.y;
 
+                    // Define DHG parameters for aerosols in the main grid
+                    const Float asy_aer_g1 = 0.962; // g1 for aerosols
+                    const Float asy_aer_g2 = 0.50;  // g2 for aerosols
+                    const Float asy_aer_f  = 0.06;  // fraction for g1
+                    const Float asy_aer_fb = 0.55;  // backscatter peak for aerosols (if used)
+
 
                     // Compute probability not being absorbed and store weighted absorption probability
                     const Float k_sca_tot = scat_asy[ijk].k_sca_gas + scat_asy[ijk].k_sca_cld + scat_asy[ijk].k_sca_aer;
@@ -667,7 +762,12 @@ void ray_tracer_kernel_bw(
                             const Float scatter_rng = rng();
                             const int scatter_type = scatter_rng < (scat_asy[ijk].k_sca_aer/k_sca_tot) ? 2 :
                                                      scatter_rng < ((scat_asy[ijk].k_sca_aer+scat_asy[ijk].k_sca_cld)/k_sca_tot) ? 1 : 0;
-                            Float g;
+                            Float g = Float(0.); // For HG and Rayleigh
+                            Float g1 = Float(0.); // For DHG
+                            Float g2 = Float(0.);
+                            Float f  = Float(0.);
+
+
                             switch (scatter_type)
                             {
                                 case 0:
@@ -677,23 +777,57 @@ void ray_tracer_kernel_bw(
                                     g = min(Float(1.) - Float_epsilon, scat_asy[ijk].asy_cld);
                                     break;
                                 case 2:
-                                    g = min(Float(1.) - Float_epsilon, scat_asy[ijk].asy_aer);
+                                    // Use DHG parameters for aerosols
+                                    g1 = asy_aer_g1;
+                                    g2 = asy_aer_g2;
+                                    f  = asy_aer_f;
                                     break;
                             }
-                            const Float cos_scat = scatter_type == 0 ? rayleigh(rng()) : // gases -> rayleigh,
-                                                                   1 ? ( (mie_table_size > 0) //clouds: Mie or HG
-                                                                            ? cos( mie_sample_angle(mie_cdf_shared, mie_ang, rng(), r_eff[ijk], mie_table_size) )
-                                                                            :  henyey(g, rng()))
-                                                                   : henyey(g, rng()); //aerosols
+
+
+                            Float cos_scat;
+                            if (scatter_type == 0) // Rayleigh scattering
+                            {
+                                cos_scat = rayleigh(rng());
+                            }
+                            else if (scatter_type == 1) // Mie or HG scattering for clouds
+                            {
+                                cos_scat = (mie_table_size > 0)
+                                        ? cos(mie_sample_angle(mie_cdf_shared, mie_ang, rng(), r_eff[ijk], mie_table_size))
+                                        : henyey(g, rng());
+                            }
+                            else if (scatter_type == 2) // DHG scattering for aerosols
+                            {
+                                cos_scat = sample_double_henyey(g1, g2, f, rng);
+                            }
+
+
                             const Float sin_scat = max(Float(0.), sqrt(Float(1.) - cos_scat*cos_scat + Float_epsilon));
 
                             // SUN SCATTERING GOES HERE
-                            const Phase_kind kind = scatter_type == 0 ? Phase_kind::Rayleigh :
-                                                                    1 ? (mie_table_size > 0)
-                                                                        ? Phase_kind::Mie
-                                                                        : Phase_kind::HG
-                                                                : Phase_kind::HG;
-                            const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, g, mie_phase_ang_shared, mie_phase, r_eff[ijk], mie_table_size,
+                            //const Phase_kind kind = scatter_type == 0 ? Phase_kind::Rayleigh :
+                            //                                        1 ? (mie_table_size > 0)
+                            //                                           ? Phase_kind::Mie
+                            //                                            : Phase_kind::HG
+                            //                                    : Phase_kind::DHG;
+
+
+                            Phase_kind kind;
+                            if (scatter_type == 0)
+                            {
+                                kind = Phase_kind::Rayleigh;
+                            }
+                            else if (scatter_type == 1)
+                            {
+                                kind = (mie_table_size > 0) ? Phase_kind::Mie : Phase_kind::HG;
+                            }
+                            else if (scatter_type == 2)
+                            {
+                                kind = Phase_kind::DHG;
+                            }
+
+
+                            const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, g, g1, g2, f, mie_phase_ang_shared, mie_phase, r_eff[ijk], mie_table_size,
                                                                      surface_normal, kind);
                             const Float trans_sun = transmission_direct_sun(photon,n,rng,sun_direction,
                                                         k_null_grid,k_ext,

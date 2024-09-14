@@ -3,7 +3,6 @@
 
 #include "types.h"
 
-
 namespace Raytracer_definitions
 {
     template<typename T>
@@ -14,6 +13,7 @@ namespace Raytracer_definitions
         T z;
     };
 
+
     struct Optics_scat
     {
         Float k_sca_gas;
@@ -21,14 +21,20 @@ namespace Raytracer_definitions
         Float k_sca_aer;
         Float asy_cld;
         Float asy_aer;
+        // Add DHG parameters for aerosols
+        Float asy_aer_g1;
+        Float asy_aer_g2;
+        Float asy_aer_f; 
+        Float asy_aer_fb;  // backscatter peak term for aerosols
     };
+
 
     enum class Photon_kind { Direct, Diffuse };
 
     struct Photon
     {
-        Vector<Float>position;
-        Vector<Float>direction;
+        Vector<Float> position;
+        Vector<Float> direction;
         Photon_kind kind;
     };
 }
