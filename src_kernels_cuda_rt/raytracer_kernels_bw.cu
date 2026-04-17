@@ -472,13 +472,14 @@ void ray_tracer_kernel_bw(
                     photon.position.y += photon.direction.y * dn;
                     photon.position.x += photon.direction.x * dn;
 
-                    // Assign DHG parameters for aerosols in the background grid
-                    // Values from (Albers 2020: https://amt.copernicus.org/articles/13/3235/2020/amt-13-3235-2020.pdf)
-
-                    const Float asy_aer_g1_bg = 0.962; // g1 for aerosols 
-                    const Float asy_aer_g2_bg = 0.50;  // g2 for aerosols
-                    const Float asy_aer_f_bg  = 0.06;  // fraction for g1
-                    const Float asy_aer_fb_bg = 0.55;  // backscatter peak for aerosols (if used)
+                    // DHG parameters for aerosols in the background grid,
+                    // read from Optics_scat populated by the caller. Defaults
+                    // to Albers 2020 hardcoded values when no DHG LUT was
+                    // supplied (see fill_aer_dhg in Raytracer_bw.cu).
+                    const Float asy_aer_g1_bg = scat_asy_bg[bg_idx].asy_aer_g1;
+                    const Float asy_aer_g2_bg = scat_asy_bg[bg_idx].asy_aer_g2;
+                    const Float asy_aer_f_bg  = scat_asy_bg[bg_idx].asy_aer_f;
+                    const Float asy_aer_fb_bg = scat_asy_bg[bg_idx].asy_aer_fb;
 
 
                     // Compute probability not being absorbed and store weighted absorption probability
@@ -728,11 +729,12 @@ void ray_tracer_kernel_bw(
                     const int k = float_to_int(photon.position.z, grid_d.z, grid_cells.z);
                     const int ijk = i + j*grid_cells.x + k*grid_cells.x*grid_cells.y;
 
-                    // Define DHG parameters for aerosols in the main grid
-                    const Float asy_aer_g1 = 0.962; // g1 for aerosols
-                    const Float asy_aer_g2 = 0.50;  // g2 for aerosols
-                    const Float asy_aer_f  = 0.06;  // fraction for g1
-                    const Float asy_aer_fb = 0.55;  // backscatter peak for aerosols (if used)
+                    // DHG parameters for aerosols in the main grid, read
+                    // from Optics_scat populated by the caller.
+                    const Float asy_aer_g1 = scat_asy[ijk].asy_aer_g1;
+                    const Float asy_aer_g2 = scat_asy[ijk].asy_aer_g2;
+                    const Float asy_aer_f  = scat_asy[ijk].asy_aer_f;
+                    const Float asy_aer_fb = scat_asy[ijk].asy_aer_fb;
 
 
                     // Compute probability not being absorbed and store weighted absorption probability

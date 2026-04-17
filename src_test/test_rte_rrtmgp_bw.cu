@@ -248,7 +248,8 @@ void solve_radiation(int argc, char** argv)
         {"broadband"        , { false, "Compute broadband fluxes"                    }},
         {"profiling"        , { false, "Perform additional profiling run."           }},
         {"delta-cloud"      , { false, "delta-scaling of cloud optical properties"   }},
-        {"delta-aerosol"    , { false, "delta-scaling of aerosol optical properties" }}};
+        {"delta-aerosol"    , { false, "delta-scaling of aerosol optical properties" }},
+        {"aerosol-dhg"      , { false, "use Double Henyey-Greenstein aerosol phase function (needs aerosol_optics_sw_dhg.nc)" }}};
     int photons_per_pixel = 1;
 
     if (parse_command_line_options(command_line_options, photons_per_pixel, argc, argv))
@@ -268,6 +269,7 @@ void solve_radiation(int argc, char** argv)
     const bool switch_profiling         = command_line_options.at("profiling"        ).first;
     const bool switch_delta_cloud       = command_line_options.at("delta-cloud"      ).first;
     const bool switch_delta_aerosol     = command_line_options.at("delta-aerosol"    ).first;
+    const bool switch_aerosol_dhg       = command_line_options.at("aerosol-dhg"      ).first;
 
     if (switch_longwave)
     {
@@ -639,7 +641,8 @@ void solve_radiation(int argc, char** argv)
 
 
         Gas_concs_gpu gas_concs_gpu(gas_concs);
-        Radiation_solver_shortwave rad_sw(gas_concs_gpu, "coefficients_sw.nc", "cloud_coefficients_sw.nc","aerosol_optics.nc");
+        Radiation_solver_shortwave rad_sw(gas_concs_gpu, "coefficients_sw.nc", "cloud_coefficients_sw.nc","aerosol_optics.nc",
+                                          switch_aerosol_dhg ? std::string("aerosol_optics_sw_dhg.nc") : std::string(""));
 
         // Read the boundary conditions.
         const int n_bnd_sw = rad_sw.get_n_bnd_gpu();

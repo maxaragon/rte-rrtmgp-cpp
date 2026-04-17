@@ -126,12 +126,37 @@ namespace
     }
 
 
+    // DHG (Double Henyey-Greenstein) defaults from Albers 2020,
+    // https://amt.copernicus.org/articles/13/3235/2020/. Used when no
+    // per-cell DHG LUT is provided - matches the hardcoded constants
+    // present in the BW kernel before the DHG-LUT path existed.
+    namespace dhg_defaults
+    {
+        __device__ __host__ constexpr Float g1() { return Float(0.962); }
+        __device__ __host__ constexpr Float g2() { return Float(0.50);  }
+        __device__ __host__ constexpr Float f () { return Float(0.06);  }
+        __device__ __host__ constexpr Float fb() { return Float(0.55);  }
+    }
+
+    __device__ __forceinline__
+    void fill_aer_dhg(Optics_scat& s, const int idx,
+                      const Float* __restrict__ g1_aer,
+                      const Float* __restrict__ g2_aer,
+                      const Float* __restrict__ f_aer)
+    {
+        s.asy_aer_g1 = (g1_aer != nullptr) ? g1_aer[idx] : dhg_defaults::g1();
+        s.asy_aer_g2 = (g2_aer != nullptr) ? g2_aer[idx] : dhg_defaults::g2();
+        s.asy_aer_f  = (f_aer  != nullptr) ? f_aer [idx] : dhg_defaults::f();
+        s.asy_aer_fb = dhg_defaults::fb();
+    }
+
     __global__
     void bundles_optical_props(
             const Vector<int> grid_cells, const int nlay, const Float grid_dz,
             const Float* __restrict__ tau_tot, const Float* __restrict__ ssa_tot,
             const Float* __restrict__ tau_cld, const Float* __restrict__ ssa_cld, const Float* __restrict__ asy_cld,
             const Float* __restrict__ tau_aer, const Float* __restrict__ ssa_aer, const Float* __restrict__ asy_aer,
+            const Float* __restrict__ g1_aer,  const Float* __restrict__ g2_aer,  const Float* __restrict__ f_aer,
             const Float rayleigh,
             const Float* __restrict__ col_dry, const Float* __restrict__ vmr_h2o,
             Float* __restrict__ k_ext, Optics_scat* __restrict__ scat_asy)
@@ -161,6 +186,7 @@ namespace
             scat_asy[idx].k_sca_aer = ksca_aer;
             scat_asy[idx].asy_cld = asy_cld[idx];
             scat_asy[idx].asy_aer = asy_aer[idx];
+            fill_aer_dhg(scat_asy[idx], idx, g1_aer, g2_aer, f_aer);
         }
 
     }
@@ -171,6 +197,7 @@ namespace
             const Float* __restrict__ tau_tot, const Float* __restrict__ ssa_tot,
             const Float* __restrict__ tau_cld, const Float* __restrict__ ssa_cld, const Float* __restrict__ asy_cld,
             const Float* __restrict__ tau_aer, const Float* __restrict__ ssa_aer, const Float* __restrict__ asy_aer,
+            const Float* __restrict__ g1_aer,  const Float* __restrict__ g2_aer,  const Float* __restrict__ f_aer,
             Float* __restrict__ k_ext, Optics_scat* __restrict__ scat_asy)
      {
         const int icol_x = blockIdx.x*blockDim.x + threadIdx.x;
@@ -192,6 +219,7 @@ namespace
             scat_asy[idx].k_sca_aer = ksca_aer;
             scat_asy[idx].asy_cld = asy_cld[idx];
             scat_asy[idx].asy_aer = asy_aer[idx];
+            fill_aer_dhg(scat_asy[idx], idx, g1_aer, g2_aer, f_aer);
         }
     }
 
@@ -202,6 +230,7 @@ namespace
             const Float* __restrict__ tau_tot, const Float* __restrict__ ssa_tot,
             const Float* __restrict__ tau_cld, const Float* __restrict__ ssa_cld, const Float* __restrict__ asy_cld,
             const Float* __restrict__ tau_aer, const Float* __restrict__ ssa_aer, const Float* __restrict__ asy_aer,
+            const Float* __restrict__ g1_aer,  const Float* __restrict__ g2_aer,  const Float* __restrict__ f_aer,
             const Float rayleigh,
             const Float* __restrict__ col_dry, const Float* __restrict__ vmr_h2o,
             Float* __restrict__ k_ext_bg, Optics_scat* __restrict__ scat_asy_bg, Float* __restrict__ z_lev_bg)
@@ -230,6 +259,7 @@ namespace
             scat_asy_bg[i].k_sca_aer = ksca_aer;
             scat_asy_bg[i].asy_cld = asy_cld[idx];
             scat_asy_bg[i].asy_aer = asy_aer[idx];
+            fill_aer_dhg(scat_asy_bg[i], idx, g1_aer, g2_aer, f_aer);
 
             z_lev_bg[i] = z_lev[i + grid_cells.z];
             if (i == nbg-1) z_lev_bg[i + 1] = z_lev[i + grid_cells.z + 1];
@@ -243,6 +273,7 @@ namespace
             const Float* __restrict__ tau_tot, const Float* __restrict__ ssa_tot,
             const Float* __restrict__ tau_cld, const Float* __restrict__ ssa_cld, const Float* __restrict__ asy_cld,
             const Float* __restrict__ tau_aer, const Float* __restrict__ ssa_aer, const Float* __restrict__ asy_aer,
+            const Float* __restrict__ g1_aer,  const Float* __restrict__ g2_aer,  const Float* __restrict__ f_aer,
             Float* __restrict__ k_ext_bg, Optics_scat* __restrict__ scat_asy_bg, Float* __restrict__ z_lev_bg)
     {
         const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -265,6 +296,7 @@ namespace
             scat_asy_bg[i].k_sca_aer = ksca_aer;
             scat_asy_bg[i].asy_cld = asy_cld[idx];
             scat_asy_bg[i].asy_aer = asy_aer[idx];
+            fill_aer_dhg(scat_asy_bg[i], idx, g1_aer, g2_aer, f_aer);
 
             z_lev_bg[i] = z_lev[i + grid_cells.z];
             if (i == nbg-1) z_lev_bg[i + 1] = z_lev[i + grid_cells.z + 1];
@@ -389,7 +421,10 @@ void Raytracer_bw::trace_rays(
         const Array_gpu<Float,2>& col_dry,
         const Array_gpu<Float,2>& vmr_h2o,
         const Camera& camera,
-        Array_gpu<Float,2>& flux_camera)
+        Array_gpu<Float,2>& flux_camera,
+        const Array_gpu<Float,2>* g1_aeros,
+        const Array_gpu<Float,2>* g2_aeros,
+        const Array_gpu<Float,2>* f_aeros)
 {
     const Float mu = std::abs(std::cos(zenith_angle));
 
@@ -409,11 +444,16 @@ void Raytracer_bw::trace_rays(
     Array_gpu<Float,3> k_ext({grid_cells.x, grid_cells.y, grid_cells.z});
     Array_gpu<Optics_scat,3> ssa_asy({grid_cells.x, grid_cells.y, grid_cells.z});
 
+    const Float* g1_ptr = (g1_aeros != nullptr) ? g1_aeros->ptr() : nullptr;
+    const Float* g2_ptr = (g2_aeros != nullptr) ? g2_aeros->ptr() : nullptr;
+    const Float* f_ptr  = (f_aeros  != nullptr) ? f_aeros ->ptr() : nullptr;
+
     bundles_optical_props<<<grid_3d, block_3d>>>(
             grid_cells, nlay, grid_d.z,
             tau_total.ptr(), ssa_total.ptr(),
             tau_cloud.ptr(), ssa_cloud.ptr(), asy_cloud.ptr(),
             tau_aeros.ptr(), ssa_aeros.ptr(), asy_aeros.ptr(),
+            g1_ptr, g2_ptr, f_ptr,
             rayleigh, col_dry.ptr(), vmr_h2o.ptr(), k_ext.ptr(), ssa_asy.ptr());
 
     // create k_null_grid
@@ -451,6 +491,7 @@ void Raytracer_bw::trace_rays(
             tau_total.ptr(), ssa_total.ptr(),
             tau_cloud.ptr(), ssa_cloud.ptr(), asy_cloud.ptr(),
             tau_aeros.ptr(), ssa_aeros.ptr(), asy_aeros.ptr(),
+            g1_ptr, g2_ptr, f_ptr,
             rayleigh, col_dry.ptr(), vmr_h2o.ptr(),
             k_ext_bg.ptr(), ssa_asy_bg.ptr(), z_lev_bg.ptr());
 
@@ -538,7 +579,10 @@ void Raytracer_bw::trace_rays_bb(
         const Float azimuth_angle,
         const Float toa_src,
         const Camera& camera,
-        Array_gpu<Float,2>& flux_camera)
+        Array_gpu<Float,2>& flux_camera,
+        const Array_gpu<Float,2>* g1_aeros,
+        const Array_gpu<Float,2>* g2_aeros,
+        const Array_gpu<Float,2>* f_aeros)
 {
     const Float mu = std::abs(std::cos(zenith_angle));
 
@@ -558,11 +602,16 @@ void Raytracer_bw::trace_rays_bb(
     Array_gpu<Float,3> k_ext({grid_cells.x, grid_cells.y, grid_cells.z});
     Array_gpu<Optics_scat,3> ssa_asy({grid_cells.x, grid_cells.y, grid_cells.z});
 
+    const Float* g1_ptr = (g1_aeros != nullptr) ? g1_aeros->ptr() : nullptr;
+    const Float* g2_ptr = (g2_aeros != nullptr) ? g2_aeros->ptr() : nullptr;
+    const Float* f_ptr  = (f_aeros  != nullptr) ? f_aeros ->ptr() : nullptr;
+
     bundles_optical_props_bb<<<grid_3d, block_3d>>>(
             grid_cells, nlay, grid_d.z,
             tau_total.ptr(), ssa_total.ptr(),
             tau_cloud.ptr(), ssa_cloud.ptr(), asy_cloud.ptr(),
             tau_aeros.ptr(), ssa_aeros.ptr(), asy_aeros.ptr(),
+            g1_ptr, g2_ptr, f_ptr,
             k_ext.ptr(), ssa_asy.ptr());
 
     // create k_null_grid
@@ -600,6 +649,7 @@ void Raytracer_bw::trace_rays_bb(
             tau_total.ptr(), ssa_total.ptr(),
             tau_cloud.ptr(), ssa_cloud.ptr(), asy_cloud.ptr(),
             tau_aeros.ptr(), ssa_aeros.ptr(), asy_aeros.ptr(),
+            g1_ptr, g2_ptr, f_ptr,
             k_ext_bg.ptr(), ssa_asy_bg.ptr(), z_lev_bg.ptr());
 
     Array_gpu<Float,2> camera_count({camera.nx, camera.ny});

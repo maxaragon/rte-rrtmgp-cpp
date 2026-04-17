@@ -120,7 +120,8 @@ class Radiation_solver_shortwave
                 const Gas_concs_gpu& gas_concs,
                 const std::string& file_name_gas,
                 const std::string& file_name_cloud,
-                const std::string& file_name_aerosol);
+                const std::string& file_name_aerosol,
+                const std::string& file_name_aerosol_dhg = "");
 
         void solve(
                 const bool switch_fluxes,

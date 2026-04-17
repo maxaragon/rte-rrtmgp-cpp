@@ -49,7 +49,14 @@ class Raytracer_bw
                 const Array_gpu<Float,2>& col_dry,
                 const Array_gpu<Float,2>& vmr_h2o,
                 const Camera& camera,
-                Array_gpu<Float,2>& flux_camera);
+                Array_gpu<Float,2>& flux_camera,
+                // DHG (Double Henyey-Greenstein) per-cell aerosol
+                // parameters. Nullable pointers (nullptr) mean "use the
+                // Albers 2020 defaults" - bit-equivalent to the current
+                // hardcoded-constant path.
+                const Array_gpu<Float,2>* g1_aeros = nullptr,
+                const Array_gpu<Float,2>* g2_aeros = nullptr,
+                const Array_gpu<Float,2>* f_aeros  = nullptr);
 
         void trace_rays_bb(
                 const int igpt,
@@ -78,7 +85,10 @@ class Raytracer_bw
                 const Float azimuth_angle,
                 const Float toa_src,
                 const Camera& camera,
-                Array_gpu<Float,2>& flux_camera);
+                Array_gpu<Float,2>& flux_camera,
+                const Array_gpu<Float,2>* g1_aeros = nullptr,
+                const Array_gpu<Float,2>* g2_aeros = nullptr,
+                const Array_gpu<Float,2>* f_aeros  = nullptr);
 
         void add_camera(
                 const Camera& camera,

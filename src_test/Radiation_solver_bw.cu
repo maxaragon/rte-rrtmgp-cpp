@@ -474,6 +474,36 @@ namespace
                 mext_phobic, ssa_phobic, g_phobic,
                 mext_philic, ssa_philic, g_philic);
     }
+
+    // Load (g1, g2, f) per species from a DHG LUT produced by
+    // band_average_dhg.py and register them on the aerosol optics object.
+    void load_and_set_dhg_tables(
+            Aerosol_optics_rt& aer, const std::string& coef_file)
+    {
+        Netcdf_file coef_nc(coef_file, Netcdf_mode::Read);
+        const int n_band   = coef_nc.get_dimension_size("band");
+        const int n_hum    = coef_nc.get_dimension_size("relative_humidity");
+        const int n_philic = coef_nc.get_dimension_size("hydrophilic");
+        const int n_phobic = coef_nc.get_dimension_size("hydrophobic");
+
+        Array<Float,2> g1_phobic(
+                coef_nc.get_variable<Float>("g1_hydrophobic", {n_phobic, n_band}), {n_band, n_phobic});
+        Array<Float,2> g2_phobic(
+                coef_nc.get_variable<Float>("g2_hydrophobic", {n_phobic, n_band}), {n_band, n_phobic});
+        Array<Float,2> f_phobic(
+                coef_nc.get_variable<Float>("f_hydrophobic", {n_phobic, n_band}), {n_band, n_phobic});
+
+        Array<Float,3> g1_philic(
+                coef_nc.get_variable<Float>("g1_hydrophilic", {n_philic, n_hum, n_band}), {n_band, n_hum, n_philic});
+        Array<Float,3> g2_philic(
+                coef_nc.get_variable<Float>("g2_hydrophilic", {n_philic, n_hum, n_band}), {n_band, n_hum, n_philic});
+        Array<Float,3> f_philic(
+                coef_nc.get_variable<Float>("f_hydrophilic", {n_philic, n_hum, n_band}), {n_band, n_hum, n_philic});
+
+        aer.set_dhg_tables(
+                g1_phobic, g2_phobic, f_phobic,
+                g1_philic, g2_philic, f_philic);
+    }
 }
 
 
@@ -719,7 +749,8 @@ Radiation_solver_shortwave::Radiation_solver_shortwave(
         const Gas_concs_gpu& gas_concs,
         const std::string& file_name_gas,
         const std::string& file_name_cloud,
-        const std::string& file_name_aerosol)
+        const std::string& file_name_aerosol,
+        const std::string& file_name_aerosol_dhg)
 {
     // Construct the gas optics classes for the solver.
     this->kdist_gpu = std::make_unique<Gas_optics_rrtmgp_rt>(
@@ -730,6 +761,9 @@ Radiation_solver_shortwave::Radiation_solver_shortwave(
 
     this->aerosol_optics_gpu = std::make_unique<Aerosol_optics_rt>(
             load_and_init_aerosol_optics(file_name_aerosol));
+
+    if (!file_name_aerosol_dhg.empty())
+        load_and_set_dhg_tables(*this->aerosol_optics_gpu, file_name_aerosol_dhg);
 }
 
 void Radiation_solver_shortwave::load_mie_tables(
@@ -823,6 +857,18 @@ void Radiation_solver_shortwave::solve_gpu(
     cloud_optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *cloud_optics_gpu);
     aerosol_optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *aerosol_optics_gpu);
 
+    // Per-column DHG arrays (g1, g2, f). Only allocated when the aerosol
+    // optics was initialised with a DHG LUT and aerosol optics is active.
+    const bool use_dhg = switch_aerosol_optics && aerosol_optics_gpu->dhg_available();
+    Array_gpu<Float,2> aer_g1;
+    Array_gpu<Float,2> aer_g2;
+    Array_gpu<Float,2> aer_f;
+    if (use_dhg)
+    {
+        aer_g1.set_dims({n_col, n_lay});
+        aer_g2.set_dims({n_col, n_lay});
+        aer_f .set_dims({n_col, n_lay});
+    }
 
     if (col_dry.size() == 0)
     {
@@ -938,11 +984,19 @@ void Radiation_solver_shortwave::solve_gpu(
             if (band > previous_band)
             {
                 Aerosol_concs_gpu aerosol_concs_subset(aerosol_concs, 1, n_col);
-                aerosol_optics_gpu->aerosol_optics(
-                        band,
-                        aerosol_concs_subset,
-                        rh, p_lev,
-                        *aerosol_optical_props);
+                if (use_dhg)
+                    aerosol_optics_gpu->aerosol_optics_dhg(
+                            band,
+                            aerosol_concs_subset,
+                            rh, p_lev,
+                            *aerosol_optical_props,
+                            aer_g1, aer_g2, aer_f);
+                else
+                    aerosol_optics_gpu->aerosol_optics(
+                            band,
+                            aerosol_concs_subset,
+                            rh, p_lev,
+                            *aerosol_optical_props);
 
                 if (switch_delta_aerosol)
                     aerosol_optical_props->delta_scale();
@@ -1042,7 +1096,10 @@ void Radiation_solver_shortwave::solve_gpu(
                     col_dry,
                     gas_concs.get_vmr("h2o"),
                     camera,
-                    flux_camera);
+                    flux_camera,
+                    use_dhg ? &aer_g1 : nullptr,
+                    use_dhg ? &aer_g2 : nullptr,
+                    use_dhg ? &aer_f  : nullptr);
 
             raytracer.add_xyz_camera(
                     camera,
@@ -1099,6 +1156,17 @@ void Radiation_solver_shortwave::solve_gpu_bb(
     optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *kdist_gpu);
     cloud_optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *cloud_optics_gpu);
     aerosol_optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *aerosol_optics_gpu);
+
+    const bool use_dhg = switch_aerosol_optics && aerosol_optics_gpu->dhg_available();
+    Array_gpu<Float,2> aer_g1;
+    Array_gpu<Float,2> aer_g2;
+    Array_gpu<Float,2> aer_f;
+    if (use_dhg)
+    {
+        aer_g1.set_dims({n_col, n_lay});
+        aer_g2.set_dims({n_col, n_lay});
+        aer_f .set_dims({n_col, n_lay});
+    }
 
     if (col_dry.size() == 0)
     {
@@ -1204,11 +1272,19 @@ void Radiation_solver_shortwave::solve_gpu_bb(
             if (band > previous_band)
             {
                 Aerosol_concs_gpu aerosol_concs_subset(aerosol_concs, 1, n_col);
-                aerosol_optics_gpu->aerosol_optics(
-                        band,
-                        aerosol_concs_subset,
-                        rh, p_lev,
-                        *aerosol_optical_props);
+                if (use_dhg)
+                    aerosol_optics_gpu->aerosol_optics_dhg(
+                            band,
+                            aerosol_concs_subset,
+                            rh, p_lev,
+                            *aerosol_optical_props,
+                            aer_g1, aer_g2, aer_f);
+                else
+                    aerosol_optics_gpu->aerosol_optics(
+                            band,
+                            aerosol_concs_subset,
+                            rh, p_lev,
+                            *aerosol_optical_props);
 
                 if (switch_delta_aerosol)
                     aerosol_optical_props->delta_scale();
@@ -1275,7 +1351,10 @@ void Radiation_solver_shortwave::solve_gpu_bb(
                 azimuth_angle,
                 toa_src({1}),
                 camera,
-                flux_camera);
+                flux_camera,
+                use_dhg ? &aer_g1 : nullptr,
+                use_dhg ? &aer_g2 : nullptr,
+                use_dhg ? &aer_f  : nullptr);
 
         raytracer.add_camera(
                 camera,
