@@ -814,6 +814,7 @@ void Radiation_solver_shortwave::solve_gpu(
         const bool switch_cloud_optics,
         const bool switch_cloud_mie,
         const bool switch_aerosol_optics,
+        const bool switch_aerosol_dhg,
         const bool switch_lu_albedo,
         const bool switch_delta_cloud,
         const bool switch_delta_aerosol,
@@ -859,7 +860,7 @@ void Radiation_solver_shortwave::solve_gpu(
 
     // Per-column DHG arrays (g1, g2, f). Only allocated when the aerosol
     // optics was initialised with a DHG LUT and aerosol optics is active.
-    const bool use_dhg = switch_aerosol_optics && aerosol_optics_gpu->dhg_available();
+    const bool use_dhg = switch_aerosol_optics && switch_aerosol_dhg && aerosol_optics_gpu->dhg_available();
     Array_gpu<Float,2> aer_g1;
     Array_gpu<Float,2> aer_g2;
     Array_gpu<Float,2> aer_f;
@@ -984,19 +985,25 @@ void Radiation_solver_shortwave::solve_gpu(
             if (band > previous_band)
             {
                 Aerosol_concs_gpu aerosol_concs_subset(aerosol_concs, 1, n_col);
-                if (use_dhg)
-                    aerosol_optics_gpu->aerosol_optics_dhg(
-                            band,
-                            aerosol_concs_subset,
-                            rh, p_lev,
-                            *aerosol_optical_props,
-                            aer_g1, aer_g2, aer_f);
-                else
-                    aerosol_optics_gpu->aerosol_optics(
-                            band,
-                            aerosol_concs_subset,
-                            rh, p_lev,
-                            *aerosol_optical_props);
+                // Always run the DHG-capable aerosol optics so the per-cell
+                // (tau, ssa, g) feeding the kernel is identical whether the
+                // BW raytracer samples single HG or DHG. The flag only
+                // controls the kernel's phase-function branch.
+                if (!use_dhg)
+                {
+                    if (!aer_g1.size())
+                    {
+                        aer_g1.set_dims({n_col, n_lay});
+                        aer_g2.set_dims({n_col, n_lay});
+                        aer_f .set_dims({n_col, n_lay});
+                    }
+                }
+                aerosol_optics_gpu->aerosol_optics_dhg(
+                        band,
+                        aerosol_concs_subset,
+                        rh, p_lev,
+                        *aerosol_optical_props,
+                        aer_g1, aer_g2, aer_f);
 
                 if (switch_delta_aerosol)
                     aerosol_optical_props->delta_scale();
@@ -1116,6 +1123,7 @@ void Radiation_solver_shortwave::solve_gpu_bb(
         const bool switch_cloud_optics,
         const bool switch_cloud_mie,
         const bool switch_aerosol_optics,
+        const bool switch_aerosol_dhg,
         const bool switch_lu_albedo,
         const bool switch_delta_cloud,
         const bool switch_delta_aerosol,
@@ -1157,7 +1165,7 @@ void Radiation_solver_shortwave::solve_gpu_bb(
     cloud_optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *cloud_optics_gpu);
     aerosol_optical_props = std::make_unique<Optical_props_2str_rt>(n_col, n_lay, *aerosol_optics_gpu);
 
-    const bool use_dhg = switch_aerosol_optics && aerosol_optics_gpu->dhg_available();
+    const bool use_dhg = switch_aerosol_optics && switch_aerosol_dhg && aerosol_optics_gpu->dhg_available();
     Array_gpu<Float,2> aer_g1;
     Array_gpu<Float,2> aer_g2;
     Array_gpu<Float,2> aer_f;

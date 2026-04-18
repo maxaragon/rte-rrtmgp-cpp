@@ -342,7 +342,8 @@ void ray_tracer_kernel_bw(
         const Float* __restrict__ mie_ang,
         const Float* __restrict__ mie_phase,
         const Float* __restrict__ mie_phase_ang,
-        const int mie_table_size)
+        const int mie_table_size,
+        const Bool use_dhg_aerosol)
 {
     extern __shared__ Float shared_arrays[];
     Float* mie_cdf_shared = &shared_arrays[0];
@@ -473,9 +474,8 @@ void ray_tracer_kernel_bw(
                     photon.position.x += photon.direction.x * dn;
 
                     // DHG parameters for aerosols in the background grid,
-                    // read from Optics_scat populated by the caller. Defaults
-                    // to Albers 2020 hardcoded values when no DHG LUT was
-                    // supplied (see fill_aer_dhg in Raytracer_bw.cu).
+                    // read from Optics_scat when DHG is enabled. Otherwise
+                    // the legacy single-HG path is used (see below).
                     const Float asy_aer_g1_bg = scat_asy_bg[bg_idx].asy_aer_g1;
                     const Float asy_aer_g2_bg = scat_asy_bg[bg_idx].asy_aer_g2;
                     const Float asy_aer_f_bg  = scat_asy_bg[bg_idx].asy_aer_f;
@@ -513,48 +513,38 @@ void ray_tracer_kernel_bw(
                                 g = min(Float(1.) - Float_epsilon, scat_asy_bg[bg_idx].asy_cld);
                                 break;
                             case 2:
-                                // Use DHG parameters for aerosols
-                                g1 = asy_aer_g1_bg;
-                                g2 = asy_aer_g2_bg;
-                                f  = asy_aer_f_bg;
+                                if (use_dhg_aerosol)
+                                {
+                                    g1 = asy_aer_g1_bg;
+                                    g2 = asy_aer_g2_bg;
+                                    f  = asy_aer_f_bg;
+                                }
+                                else
+                                {
+                                    g = min(Float(1.) - Float_epsilon, scat_asy_bg[bg_idx].asy_aer);
+                                }
                                 break;
                         }
 
-
-                        //const Float cos_scat = (scatter_type == 0) ? rayleigh(rng()) : henyey(g, rng());
-                        //const Float cos_scat = sample_double_henyey(g1, g2, f, rng);
                         Float cos_scat;
-                        if (scatter_type == 0) // Rayleigh scattering
-                        {
+                        if (scatter_type == 0)
                             cos_scat = rayleigh(rng());
-                        }
-                        else if (scatter_type == 1) // HG scattering for clouds
-                        {
+                        else if (scatter_type == 1)
                             cos_scat = henyey(g, rng());
-                        }
-                        else if (scatter_type == 2) // DHG scattering for aerosols
-                        {
-                            cos_scat = sample_double_henyey(g1, g2, f, rng);
-                        }
+                        else // scatter_type == 2
+                            cos_scat = use_dhg_aerosol ? sample_double_henyey(g1, g2, f, rng)
+                                                       : henyey(g, rng());
 
-                        
                         const Float sin_scat = max(Float(0.), sqrt(Float(1.) - cos_scat*cos_scat + Float_epsilon));
 
                         // direct contribution
-                        //const Phase_kind kind = (scatter_type==0) ? Phase_kind::Rayleigh : Phase_kind::HG;
                         Phase_kind kind;
                         if (scatter_type == 0)
-                        {
                             kind = Phase_kind::Rayleigh;
-                        }
                         else if (scatter_type == 1)
-                        {
                             kind = (mie_table_size > 0) ? Phase_kind::Mie : Phase_kind::HG;
-                        }
-                        else if (scatter_type == 2)
-                        {
-                            kind = Phase_kind::DHG;
-                        }
+                        else
+                            kind = use_dhg_aerosol ? Phase_kind::DHG : Phase_kind::HG;
 
                         const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, g, g1, g2, f, mie_phase_ang_shared, mie_phase, Float(0.), 0, surface_normal, kind);
                         const Float trans_sun = transmission_direct_sun(photon,n,rng,sun_direction,
@@ -730,7 +720,8 @@ void ray_tracer_kernel_bw(
                     const int ijk = i + j*grid_cells.x + k*grid_cells.x*grid_cells.y;
 
                     // DHG parameters for aerosols in the main grid, read
-                    // from Optics_scat populated by the caller.
+                    // from Optics_scat when DHG is enabled. Otherwise the
+                    // legacy single-HG path is used (see below).
                     const Float asy_aer_g1 = scat_asy[ijk].asy_aer_g1;
                     const Float asy_aer_g2 = scat_asy[ijk].asy_aer_g2;
                     const Float asy_aer_f  = scat_asy[ijk].asy_aer_f;
@@ -769,7 +760,6 @@ void ray_tracer_kernel_bw(
                             Float g2 = Float(0.);
                             Float f  = Float(0.);
 
-
                             switch (scatter_type)
                             {
                                 case 0:
@@ -779,30 +769,29 @@ void ray_tracer_kernel_bw(
                                     g = min(Float(1.) - Float_epsilon, scat_asy[ijk].asy_cld);
                                     break;
                                 case 2:
-                                    // Use DHG parameters for aerosols
-                                    g1 = asy_aer_g1;
-                                    g2 = asy_aer_g2;
-                                    f  = asy_aer_f;
+                                    if (use_dhg_aerosol)
+                                    {
+                                        g1 = asy_aer_g1;
+                                        g2 = asy_aer_g2;
+                                        f  = asy_aer_f;
+                                    }
+                                    else
+                                    {
+                                        g = min(Float(1.) - Float_epsilon, scat_asy[ijk].asy_aer);
+                                    }
                                     break;
                             }
 
-
                             Float cos_scat;
-                            if (scatter_type == 0) // Rayleigh scattering
-                            {
+                            if (scatter_type == 0)
                                 cos_scat = rayleigh(rng());
-                            }
-                            else if (scatter_type == 1) // Mie or HG scattering for clouds
-                            {
+                            else if (scatter_type == 1)
                                 cos_scat = (mie_table_size > 0)
                                         ? cos(mie_sample_angle(mie_cdf_shared, mie_ang, rng(), r_eff[ijk], mie_table_size))
                                         : henyey(g, rng());
-                            }
-                            else if (scatter_type == 2) // DHG scattering for aerosols
-                            {
-                                cos_scat = sample_double_henyey(g1, g2, f, rng);
-                            }
-
+                            else // scatter_type == 2
+                                cos_scat = use_dhg_aerosol ? sample_double_henyey(g1, g2, f, rng)
+                                                           : henyey(g, rng());
 
                             const Float sin_scat = max(Float(0.), sqrt(Float(1.) - cos_scat*cos_scat + Float_epsilon));
 
@@ -816,17 +805,11 @@ void ray_tracer_kernel_bw(
 
                             Phase_kind kind;
                             if (scatter_type == 0)
-                            {
                                 kind = Phase_kind::Rayleigh;
-                            }
                             else if (scatter_type == 1)
-                            {
                                 kind = (mie_table_size > 0) ? Phase_kind::Mie : Phase_kind::HG;
-                            }
-                            else if (scatter_type == 2)
-                            {
-                                kind = Phase_kind::DHG;
-                            }
+                            else
+                                kind = use_dhg_aerosol ? Phase_kind::DHG : Phase_kind::HG;
 
 
                             const Float p_sun = probability_from_sun(photon, sun_direction, solid_angle, g, g1, g2, f, mie_phase_ang_shared, mie_phase, r_eff[ijk], mie_table_size,

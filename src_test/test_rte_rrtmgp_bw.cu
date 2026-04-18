@@ -641,8 +641,12 @@ void solve_radiation(int argc, char** argv)
 
 
         Gas_concs_gpu gas_concs_gpu(gas_concs);
-        Radiation_solver_shortwave rad_sw(gas_concs_gpu, "coefficients_sw.nc", "cloud_coefficients_sw.nc","aerosol_optics.nc",
-                                          switch_aerosol_dhg ? std::string("aerosol_optics_sw_dhg.nc") : std::string(""));
+        // Always attempt to load the DHG LUT when aerosol optics are on so
+        // the BW kernel can branch at runtime between single-HG sampling
+        // (legacy, --aerosol-optics alone) and DHG sampling (--aerosol-dhg).
+        const std::string dhg_lut = switch_aerosol_optics
+            ? std::string("aerosol_optics_sw_dhg.nc") : std::string("");
+        Radiation_solver_shortwave rad_sw(gas_concs_gpu, "coefficients_sw.nc", "cloud_coefficients_sw.nc","aerosol_optics.nc", dhg_lut);
 
         // Read the boundary conditions.
         const int n_bnd_sw = rad_sw.get_n_bnd_gpu();
@@ -727,6 +731,7 @@ void solve_radiation(int argc, char** argv)
                     switch_cloud_optics,
                     switch_cloud_mie,
                     switch_aerosol_optics,
+                    switch_aerosol_dhg,
                     switch_lu_albedo,
                     switch_delta_cloud,
                     switch_delta_aerosol,
@@ -796,6 +801,7 @@ void solve_radiation(int argc, char** argv)
                     switch_cloud_optics,
                     switch_cloud_mie,
                     switch_aerosol_optics,
+                    switch_aerosol_dhg,
                     switch_lu_albedo,
                     switch_delta_cloud,
                     switch_delta_aerosol,

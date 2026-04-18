@@ -115,5 +115,6 @@ void ray_tracer_kernel_bw(
         const Float* __restrict__ mie_ang,
         const Float* __restrict__ mie_phase,
         const Float* __restrict__ mie_phase_ang,
-        const int mie_table_size);
+        const int mie_table_size,
+        const Bool use_dhg_aerosol);
 #endif

@@ -144,10 +144,24 @@ namespace
                       const Float* __restrict__ g2_aer,
                       const Float* __restrict__ f_aer)
     {
-        s.asy_aer_g1 = (g1_aer != nullptr) ? g1_aer[idx] : dhg_defaults::g1();
-        s.asy_aer_g2 = (g2_aer != nullptr) ? g2_aer[idx] : dhg_defaults::g2();
-        s.asy_aer_f  = (f_aer  != nullptr) ? f_aer [idx] : dhg_defaults::f();
         s.asy_aer_fb = dhg_defaults::fb();
+        if (g1_aer != nullptr)
+        {
+            s.asy_aer_g1 = g1_aer[idx];
+            s.asy_aer_g2 = g2_aer[idx];
+            s.asy_aer_f  = f_aer [idx];
+        }
+        else
+        {
+            // No DHG LUT supplied -- collapse DHG sampling to pure single
+            // Henyey-Greenstein with the per-cell bulk asymmetry. This
+            // reproduces the legacy --aerosol-optics (no --aerosol-dhg)
+            // behaviour numerically: sample_double_henyey(g, g, 1, rng)
+            // always takes the first lobe and equals henyey(g, rng()).
+            s.asy_aer_g1 = s.asy_aer;
+            s.asy_aer_g2 = s.asy_aer;
+            s.asy_aer_f  = Float(1.0);
+        }
     }
 
     __global__
@@ -515,6 +529,8 @@ void Raytracer_bw::trace_rays(
 
     const int mie_table_size = mie_cdf.size();
 
+    const Bool use_dhg_aerosol = (g1_aeros != nullptr);
+
     ray_tracer_kernel_bw<<<grid, block, nbg*sizeof(Float) + 2 * sizeof(Float)*mie_table_size>>>(
             igpt-1,
             photons_per_pixel, k_null_grid.ptr(),
@@ -531,7 +547,8 @@ void Raytracer_bw::trace_rays(
             grid_size, grid_d, grid_cells, kn_grid,
             sun_direction, camera, nbg,
             mie_cdf.ptr(), mie_ang.ptr(),
-            mie_phase.ptr(), mie_phase_ang.ptr(), mie_table_size);
+            mie_phase.ptr(), mie_phase_ang.ptr(), mie_table_size,
+            use_dhg_aerosol);
 
     //// convert counts to fluxes
     const int block_cam_x = 8;
@@ -672,6 +689,8 @@ void Raytracer_bw::trace_rays_bb(
 
     const int mie_table_size = mie_cdf.size();
 
+    const Bool use_dhg_aerosol = (g1_aeros != nullptr);
+
     ray_tracer_kernel_bw<<<grid, block, nbg*sizeof(Float)+ 2 * sizeof(Float)*mie_table_size>>>(
             igpt-1,
             photons_per_pixel, k_null_grid.ptr(),
@@ -689,7 +708,8 @@ void Raytracer_bw::trace_rays_bb(
             sun_direction, camera, nbg,
             mie_cdf.ptr(), mie_ang.ptr(),
             mie_phase.ptr(), mie_phase_ang.ptr(),
-            mie_table_size);
+            mie_table_size,
+            use_dhg_aerosol);
 
     //// convert counts to fluxes
     const int block_cam_x = 8;
